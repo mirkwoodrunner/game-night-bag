@@ -20,7 +20,7 @@ Personal web app for one user (Chris). Tracks which Commander decks are packed f
 | `SECRET_KEY` | Flask session signing. Long random string. |
 | `APP_PASSWORD` | The single login password. |
 | `SCRYFALL_CONTACT` | Email used in the Scryfall User-Agent header. |
-| `IMPORT_KEY` | Shared secret the Moxfield sync bookmarklet sends to the import endpoint. |
+| `MOXFIELD_USERNAME` | Moxfield user whose public Commander decks are synced (`mirkwoodrunner`). |
 
 Never commit secrets. Keep `.env` in `.gitignore`. Provide `.env.example` with placeholder values.
 
@@ -30,7 +30,7 @@ Single user. One login page that checks `APP_PASSWORD` with `hmac.compare_digest
 
 ## Data model
 
-- `Deck` id, name, commander (text), moxfield_id (nullable, unique), moxfield_url (nullable), last_synced_at (nullable), decklist_text, created_at, updated_at
+- `Deck` id, name, commander (text), moxfield_id (nullable, unique), moxfield_url (nullable), last_synced_at (nullable), in_rotation (bool, default true), decklist_text, created_at, updated_at
 - `DeckCard` id, deck_id, name, quantity, oracle_id (nullable until resolved), is_commander
 - `Card` oracle_id (pk), name, type_line, related_tokens (JSON list of token oracle_ids), fetched_at. Cache of Scryfall lookups.
 - `Token` oracle_id (pk), label (readable, like "1/1 white Soldier"), name, type_line, power, toughness, colors, oracle_text, image_url
@@ -58,24 +58,30 @@ Accept Moxfield plain text and MTGO export. Handle these:
 - Section headers like `Commander`, `COMMANDER:`, `SIDEBOARD:`, and blank lines between sections. Cards under a commander header get `is_commander = true`.
 - Report unresolved names to the user instead of dropping them silently.
 
-## Moxfield folder sync (critical feature)
+## Moxfield deck sync (critical feature)
 
-This is the most important feature. Feasibility is proven in phase 0 before other work. If a later change could break the sync, say so before making it.
+This is the most important feature. If a later change could break the sync, say so before making it. Phase 0 findings and alternatives are in `docs/DECISIONS.md`.
 
-Goal: pull every deck in Chris's private Moxfield folder "EDH" (folder id `4QVN9`, taken from the `selectedFolderId` in his personal decks URL) into the app, and keep it in sync.
+Goal: keep every Commander deck in Chris's rotation in the app, fetched from Moxfield by the server, with no script to run and no login stored.
 
-Approach: a bookmarklet (or userscript) that Chris runs on moxfield.com while logged in.
-1. Running in his browser, it reads the folder's deck list and each deck's cards using his existing Moxfield session, the same requests moxfield.com itself makes.
-2. It POSTs the result to `POST /api/import/moxfield` on this app.
-3. The app upserts decks by Moxfield public id, replaces their card lists, re-runs token lookup, and reports added, updated and unchanged decks. Decks removed from the folder are flagged for Chris to confirm, never deleted automatically.
+Rotation signal: **public visibility**. Moxfield folders are not visible without logging in, so the EDH folder cannot be read. Instead, Chris keeps rotation decks **public** and sets retired and league decks to **unlisted** or **private**. Every public Commander-format deck by `MOXFIELD_USERNAME` is in rotation.
+
+Approach:
+1. A "Sync decks" button on the Decks page. Sync runs on demand, never on a schedule.
+2. The server fetches the user's public deck list from Moxfield and keeps the Commander-format decks. The exact endpoint is not yet known. It must be found from Render (see Rules) and recorded in `docs/DECISIONS.md`.
+3. For each deck, the server fetches `GET https://api.moxfield.com/v2/decks/all/{publicId}`. This endpoint is proven by Chris's mtg-collection-tracker app, which still syncs from Render as of 2026-11-27.
+4. Upsert decks by Moxfield public id, replace their card lists, re-run token lookup, and report added, updated and unchanged decks. A deck that is no longer in the public list gets `in_rotation = false` and is flagged for Chris to confirm. Never delete a deck automatically, because its game history must survive.
+5. Fallback: add or refresh a single deck by pasting its Moxfield link. Pasted decklists still work if Moxfield is unreachable.
 
 Rules:
-- Moxfield has no official public API. The requests the site makes are undocumented and may change. Discover them by inspecting moxfield.com network traffic in a logged-in browser, and document what you find in DECISIONS.md.
-- The server never logs in to Moxfield, never calls Moxfield, and never stores Moxfield passwords, cookies or tokens.
-- The import endpoint takes an `IMPORT_KEY` env var sent as a header. Allow CORS only from `https://moxfield.com` and `https://www.moxfield.com`, only on that endpoint.
-- Keep Moxfield parsing in `app/importers/moxfield.py`. If the payload shape changes, fail with a clear message, and pasted decklists still work.
-- Throttle requests in the bookmarklet (at least 500 ms between deck fetches).
-- If any step would require getting around Cloudflare or bot protection, stop and ask Chris.
+- Moxfield has no official public API. These endpoints are undocumented and may change. Treat every response shape as untrusted and fail with a clear message if it changes.
+- Only anonymous GET requests for public data. Never log in to Moxfield, never store Moxfield passwords, cookies or tokens.
+- One request at a time, at least 1 second apart. Never parallelize. Send a plain `User-Agent: GameNightBag/0.1`.
+- Cloudflare blocks Moxfield requests from the Claude Code cloud container (and likely other datacenter IPs) but allows Render. If any step would require getting around Cloudflare or bot protection, stop and ask Chris.
+- Because Moxfield is unreachable from the dev container, tests use real responses captured from Render and saved under `tests/fixtures/moxfield/`. Network calls stay mocked in tests.
+- All Moxfield code lives in `app/importers/moxfield.py`. No other file talks to Moxfield.
+- Known deck JSON quirks (from mtg-collection-tracker): `mainboard`, `sideboard` and `commanders` are objects keyed by id, each entry `{quantity, card}`. `card.type` can be a numeric code, not text. Some entries have no `card`. The `tokens` field comes as an array, an object of flat cards, or an object of `{card}` entries, and can include non-token cards.
+- A sync of N decks takes at least N seconds. Make sure the gunicorn timeout allows it (see Deployment).
 - Store each deck's Moxfield URL and `last_synced_at`.
 
 ## UI
@@ -97,7 +103,7 @@ pytest
 
 - `render.yaml` defines one free web service.
 - Build: `pip install -r requirements.txt`
-- Start: `flask --app app db upgrade && gunicorn "app:create_app()"`. Check whether Render's pre-deploy command works on the free tier. If it does, move the migration there.
+- Start: `flask --app app db upgrade && gunicorn --timeout 180 "app:create_app()"`. The long timeout lets a full Moxfield sync finish in one request. Check whether Render's pre-deploy command works on the free tier. If it does, move the migration there.
 - `/healthz` returns 200 without touching the database.
 
 ## Documentation rules
