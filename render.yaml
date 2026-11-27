@@ -1,0 +1,23 @@
+# Render Blueprint. One free web service. The database is on Neon, not Render.
+services:
+  - type: web
+    name: game-night-bag
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # Pre-deploy commands are paid-only, so migrations run at start.
+    # One worker because login lockout keeps state in memory. Threads keep
+    # /healthz answering while a long Moxfield sync runs.
+    startCommand: flask --app app db upgrade && gunicorn --workers 1 --threads 4 --timeout 180 "app:create_app()"
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_PASSWORD
+        sync: false
+      - key: MOXFIELD_USERNAME
+        value: mirkwoodrunner

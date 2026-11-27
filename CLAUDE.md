@@ -19,7 +19,7 @@ Personal web app for one user (Chris). Tracks which Commander decks are packed f
 | `DATABASE_URL` | Neon pooled connection string. Unset locally to use SQLite. |
 | `SECRET_KEY` | Flask session signing. Long random string. |
 | `APP_PASSWORD` | The single login password. |
-| `SCRYFALL_CONTACT` | Email used in the Scryfall User-Agent header. |
+| `SCRYFALL_CONTACT` | Optional. Contact in the Scryfall User-Agent header. Defaults to the GitHub repo URL. No Scryfall account is needed. |
 | `MOXFIELD_USERNAME` | Moxfield user whose public Commander decks are synced (`mirkwoodrunner`). |
 
 Never commit secrets. Keep `.env` in `.gitignore`. Provide `.env.example` with placeholder values.
@@ -48,6 +48,7 @@ Single user. One login page that checks `APP_PASSWORD` with `hmac.compare_digest
 - Token extraction comes from each card's `all_parts`. Include a part when `component == "token"`, or when its `type_line` contains "Emblem", or when it is a helper card such as The Monarch, The Initiative, The Ring, Day // Night, or a Dungeon. Verify these rules against real responses saved as test fixtures before relying on them. If a rule is wrong, fix it here and in DECISIONS.md.
 - Group identical tokens by token `oracle_id`. Build the label from power/toughness, colors and name, and include short ability text when two tokens share a label.
 - Users can add manual tokens and hide wrong ones per deck. A re-lookup never removes manual tokens or unhides hidden ones.
+- `DeckToken`, `BagDeck` and `BagTokenPacked` use composite primary keys (the pair of ids). `Game.deck_id` is `ON DELETE RESTRICT`, so a deck with games can't be deleted by accident.
 
 ## Decklist parsing
 
@@ -93,7 +94,9 @@ Rules:
 ## Commands
 
 ```
+python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # then edit APP_PASSWORD
 flask --app app db upgrade
 flask --app app run --debug
 pytest
@@ -103,7 +106,9 @@ pytest
 
 - `render.yaml` defines one free web service.
 - Build: `pip install -r requirements.txt`
-- Start: `flask --app app db upgrade && gunicorn --timeout 180 "app:create_app()"`. The long timeout lets a full Moxfield sync finish in one request. Check whether Render's pre-deploy command works on the free tier. If it does, move the migration there.
+- Start: `flask --app app db upgrade && gunicorn --workers 1 --threads 4 --timeout 180 "app:create_app()"`. One worker because the login lockout lives in memory. Threads keep `/healthz` answering during a long sync. The long timeout lets a full Moxfield sync finish in one request.
+- Render's pre-deploy command is paid-only (checked 2026-11-27), so migrations run in the start command.
+- Render region is the default (Oregon), the same as mtg-collection-tracker, which Moxfield allows.
 - `/healthz` returns 200 without touching the database.
 
 ## Documentation rules

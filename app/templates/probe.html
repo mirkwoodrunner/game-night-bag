@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Moxfield probe · Game Night Bag{% endblock %}
+{% block content %}
+<h1>Moxfield probe</h1>
+<p class="muted">Temporary. Runs Moxfield requests from this server, one per second.</p>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<form method="post">
+  <input type="hidden" name="action" value="list">
+  <button type="submit">1. Try deck list URLs</button>
+</form>
+
+<form method="post">
+  <input type="hidden" name="action" value="deck">
+  <label for="deck">2. Deck link or id</label>
+  <input id="deck" name="deck" placeholder="https://moxfield.com/decks/...">
+  <button type="submit">Fetch deck</button>
+</form>
+
+<form method="post">
+  <input type="hidden" name="action" value="custom">
+  <label for="url">3. Custom API URL</label>
+  <input id="url" name="url" placeholder="https://api2.moxfield.com/...">
+  <button type="submit">Fetch URL</button>
+</form>
+
+{% for r in results %}
+<section class="result">
+  <p class="url">{{ r.url }}</p>
+  <p><strong>{{ r.status or "no response" }}</strong> · {{ r.content_type or "?" }} ·
+     {{ r.body|length }} bytes · {{ r.seconds }}s
+     {% if r.error %}<span class="error">· {{ r.error }}</span>{% endif %}</p>
+  {% if r.body %}
+  <pre>{{ r.body[:1500] }}</pre>
+  <a class="button" href="{{ url_for('probe.raw', n=loop.index0) }}">Download full response</a>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

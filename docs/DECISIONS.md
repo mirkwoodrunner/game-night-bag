@@ -36,3 +36,14 @@ Alternatives considered:
 - Decide the token source. Moxfield's deck JSON has a `tokens` field (the old app used it, and needed a filter for non-token cards). Scryfall `all_parts` is the current plan. Compare both on decks with Queen Marchesa, an Initiative card, Elspeth, Sun's Champion and Bitterblossom before building Phase 1 step 3.
 - Scryfall is also blocked from this container by the network allowlist, not Cloudflare. Allowing `api.scryfall.com` in the cloud environment is needed to save Scryfall fixtures.
 - Risks. If Moxfield starts blocking Render, sync stops with no fix on our side. Pasted decklists keep working. Moxfield's terms have not been reviewed yet (the site was unreachable from here).
+
+## 2026-11-27 Phase 1a. Scaffold and deploy choices
+
+- **Deploy before deck features.** Moxfield is only reachable from Render, so the app goes live first with a temporary probe page to find the public deck list endpoint and capture fixtures. Alternative was building Phase 1 against guessed JSON shapes, then fixing after deploy.
+- **Migrations in the start command.** Render's pre-deploy command is paid-only ([Render docs](https://render.com/docs/deploys)). Render's guides also suggest the build command. The start command was kept because CLAUDE.md specifies it, and both work for one user.
+- **One gunicorn worker, four threads.** The lockout and the probe keep state in memory, which needs one process. Threads keep `/healthz` responsive during a sync that can last a minute, so Render's health check doesn't restart the service mid-sync.
+- **psycopg `prepare_threshold=None` on Postgres.** Neon's pooled host runs PgBouncer, and psycopg's automatic prepared statements can clash with it. Turning them off costs little for this app. Alternative was the direct, unpooled Neon host, which CLAUDE.md rules out.
+- **No CSRF tokens.** Session cookies are `SameSite=Lax`, which stops other sites from sending logged-in POSTs in current browsers. Flask-WTF would add a dependency and a token to every form. Revisit if a form ever needs to accept cross-site posts.
+- **Lockout is per client IP**, read through `ProxyFix` behind Render's proxy. A single global counter would let anyone lock Chris out with 10 bad guesses.
+- **The whole data model went into the first migration**, bag and games included, so later phases don't need schema changes for tables CLAUDE.md already defines.
+- **`SCRYFALL_CONTACT` is optional.** Scryfall asks for an identifying User-Agent, not an account. The repo URL serves as the contact.
